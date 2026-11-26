@@ -1,0 +1,266 @@
+Техническое задание (v2.3 FINAL): Backend & UI обёртка над Keitaro Admin API
+1. Цель проекта и стек технологий
+Разработать веб-приложение (REST API + минималистичный фронтенд), являющееся обёрткой над рекламным трекером Keitaro (версия ~10.3.16). Приложение автоматизирует две задачи: 
+1.	Создаватор кампаний: создание кампании с предустановленными параметрами (домен, группа, источник) и двумя потоками (поток-фильтр по Geo -> редирект на Google; основной поток -> выбранный оффер). 
+2.	Редактор кампаний: управление офферами внутри потоков через локальный буфер (черновик) с поддержкой мягкого удаления, восстановления, закрепления весов (Pin), отката изменений (Cancel), синхронизации (Fetch Streams) и публикации в Keitaro (Push to Keitaro). 
+Технологический стек:
+•	Python: 3.11+
+•	Web-фреймворк: FastAPI 
+•	ORM и БД: SQLAlchemy 2.0 (async, Mapped / DeclarativeBase) + aiosqlite (SQLite) + Alembic для миграций 
+•	HTTP-клиент: httpx.AsyncClient (единый инстанс с таймаутами, закрываемый в lifespan) 
+•	Валидация и конфиг: Pydantic v2 + pydantic-settings
+•	Фронтенд: один статический файл static/index.html (HTML5 + Vanilla JS или Alpine.js + Tailwind CDN), раздаваемый через FastAPI StaticFiles 
+•	Тестирование: pytest, pytest-asyncio, respx (или httpx.MockTransport) 
+2. Визуальная спецификация по материалам исходного ТЗ
+Схема 1. Логика маршрутизации потоков (из Скриншота 1 ТЗ)
+Кампания имеет сгенерированную трекинговую ссылку (например, [https://in.posdk.xyz/wVqN1R](https://in.posdk.xyz/wVqN1R)?...) и работает в режиме ротации потоков «По позиции» сверху вниз:
+•	Flow 1 (Фильтр по стране):
+o	Фильтры: Страны — принимать указанную страну (на скриншоте: «Австралия» / AU).
+o	Действие: прямой редирект на [https://google.com](https://google.com).
+•	Flow 2 (Основной поток с офферами):
+o	Ловит весь трафик, не попавший в Flow 1.
+o	Офферы: список привязанных офферов с весами в процентах (например: [3749] Miaflow ... - 50% и [3717] Miaflow ... - 50%). 
+Схема 2. Параметры кампании и форма «Создаватора» (из Скриншота 2 ТЗ)
+При создании кампании в Keitaro выставляются следующие параметры:
+•	Домен: [https://in.posdk.xyz/](https://in.posdk.xyz/)
+•	Идентификатор (alias): генерируемый код вида wVqN1R
+•	Группа: FORTESTS
+•	Источник: FORTESTS
+•	Ротация потоков: По позиции (type: "position")
+•	Модель затрат: CPC (Оплата за клик), Стоимость: 0 USD, галочка Из параметра 'cost' (cost_auto: true). 
+Интерфейс модального окна / формы «New campaign»:
+Plaintext
++----------------------------------------------------+
+| New campaign                                   [X] |
++----------------------------------------------------+
+| Name  | [ имя кампании                           ] |
+| Geo   | [ MX,AU,RO,...                           ] |
+| Offer | [ поиск по офферам с автокомплитом       ] |
++----------------------------------------------------+
+|                                           [Create] |
++----------------------------------------------------+
+Схема 3. Получение API-ключа в Keitaro (из Скриншота 3 ТЗ)
+•	В админке Keitaro (v10.3.16): правое верхнее меню Профиль → вкладка API ключи → кнопка Создать новый ключ (рядом доступна ссылка Документация на встроенный Swagger API).
+3. Конфигурация (.env)
+Приложение читает настройки из файла .env (обязательно приложить .env.example, а .env и *.db добавить в .gitignore): 
+Фрагмент кода
+KEITARO_BASE_URL=https://your-tracker-domain.com
+KEITARO_API_KEY=your_api_key_here
+DEFAULT_DOMAIN_NAME=https://in.posdk.xyz/
+DEFAULT_GROUP_NAME=FORTESTS
+DEFAULT_SOURCE_NAME=FORTESTS
+DATABASE_URL=sqlite+aiosqlite:///./keitaro_wrapper.db
+4. Структура проекта
+Plaintext
+keitaro-wrapper/
+├── alembic/                 # Миграции Alembic (начальная ревизия схемы БД)
+├── alembic.ini
+├── app/
+│   ├── __init__.py
+│   ├── main.py              # Точка входа FastAPI, lifespan (httpx клиент + первичная загрузка кэша), static
+│   ├── config.py            # Настройки через pydantic-settings
+│   ├── database.py          # Async engine, PRAGMA foreign_keys=ON, async_sessionmaker, Base
+│   ├── models.py            # SQLAlchemy 2.0 модели
+│   ├── schemas.py           # Pydantic v2 схемы запросов и ответов
+│   ├── keitaro_client.py    # Изолированный асинхронный клиент для Keitaro Admin API v1
+│   ├── calculator.py        # Чистая функция пересчёта весов с учётом Pin и edge-кейсов
+│   ├── services.py          # Бизнес-логика (создание, синхронизация, черновики, push/cancel)
+│   └── router.py            # API эндпоинты (/api/...)
+├── static/
+│   └── index.html           # Веб-интерфейс (Создаватор + Редактор)
+├── tests/
+│   ├── test_calculator.py   # Юнит-тесты калькулятора весов (Pin, 100% Pin, остатки)
+│   └── test_flows.py        # Тесты переходов черновика и mock-интеграции API
+├── .env.example
+├── .gitignore
+├── requirements.txt
+└── README.md                # Инструкция запуска с командой `alembic upgrade head`
+5. Взаимодействие с Keitaro Admin API v1
+Все запросы отправляются через единый httpx.AsyncClient (с timeout=15.0) на {KEITARO_BASE_URL}/admin_api/v1{endpoint} с заголовком Api-Key: {KEITARO_API_KEY}. 
+•	Обработка ошибок: При ответе Keitaro со статусом >= 400 клиент keitaro_client.py логирует URL, метод, тело запроса (без секретов) и текст ответа Keitaro, после чего выбрасывает исключение KeitaroAPIError, которое роутер преобразует в HTTP 502 (или 400 при ошибке валидации данных) без утечки внутренних трейсбеков. 
+•	Нормализация справочников: При поиске домена по DEFAULT_DOMAIN_NAME сравнивать строки без учёта протокола (http://, https://) и завершающего слеша /. Если значение в .env пустое или не найдено в Keitaro — возвращать 400 Bad Request со списком доступных имён из трекера (не подставлять первый попавшийся элемент вслепую). 
+Используемые эндпоинты Keitaro:
+•	GET /domains — список доменов. 
+•	GET /groups?type=campaigns — список групп кампаний (обязателен параметр type=campaigns). 
+•	GET /traffic_sources — список источников трафика. 
+•	GET /offers — список всех офферов (id, name, state). 
+•	GET /campaigns — список кампаний (id, name, alias). 
+•	POST /campaigns — создание новой кампании. 
+•	GET /campaigns/{campaign_id}/streams — получение потоков кампании. 
+•	GET /streams/{stream_id} — получение полного объекта потока перед публикацией PUT и проверкой конфликтов. 
+•	POST /streams — создание потока. 
+•	PUT /streams/{stream_id} — обновление потока. 
+Важное правило верификации перед реализацией: Перед генерацией финальных payload-моделей выполнить проверочный запрос к целевому экземпляру Keitaro (GET /campaigns/{id}/streams и GET /groups?type=campaigns), чтобы подтвердить точные названия полей (schema, action_type, action_payload, filters, offers) в версии 10.3.16. 
+6. Детальная спецификация базы данных (SQLAlchemy 2.0 + Alembic)
+6.1. Правила работы с ORM и миграциями
+•	Миграции: Схема БД создаётся и обновляется через Alembic (alembic upgrade head). В README.md обязательно указать запуск миграций перед стартом uvicorn.
+•	Включение внешних ключей в SQLite: В app/database.py на engine.sync_engine повесить обработчик @event.listens_for(..., "connect"), выполняющий PRAGMA foreign_keys=ON;.
+•	Асинхронная загрузка связей: Во всех запросах SQLAlchemy 2.0 использовать явную загрузку (selectinload(Stream.offers)), полностью исключив неявный lazy-loading.
+•	Транзакционность: Каждое локальное действие редактора (Add, Remove, Bring back, Pin, Cancel) выполняется в единой транзакции БД с автоматическим rollback при любой ошибке валидации.
+6.2. Описание таблиц и полей
+1. Таблица offers_cache (Локальный кэш офферов из Keitaro)
+•	id (Integer, PK, autoincrement=False) — оригинальный ID оффера в Keitaro (offer_id). 
+•	name (String(255), nullable=False, index=True) — название оффера. 
+•	state (String(32), default="active") — статус оффера в Keitaro (active / deleted). 
+•	updated_at (DateTime(timezone=True), server_default=func.now()).
+2. Таблица campaigns (Кампании)
+•	id (Integer, PK, autoincrement=True) — внутренний локальный ID.
+•	keitaro_id (Integer, unique=True, nullable=False, index=True) — ID кампании в Keitaro.
+•	name (String(255), nullable=False) — название кампании. 
+•	alias (String(64), nullable=True) — короткий идентификатор ссылки (например, wVqN1R). 
+•	created_at (DateTime(timezone=True), server_default=func.now()).
+•	updated_at (DateTime(timezone=True), onupdate=func.now()).
+•	Связи: streams: Mapped[list["Stream"]] (cascade="all, delete-orphan", order_by="Stream.position").
+3. Таблица streams (Потоки кампании)
+•	id (Integer, PK, autoincrement=True) — внутренний локальный ID (используется как {stream_id} в API обёртки).
+•	keitaro_id (Integer, unique=True, nullable=False, index=True) — ID потока в Keitaro.
+•	campaign_id (Integer, FK("campaigns.id", ondelete="CASCADE"), nullable=False, index=True).
+•	name (String(255), nullable=True) — название потока.
+•	position (Integer, nullable=False, default=1) — позиция потока при ротации. 
+•	is_offer_stream (Boolean, nullable=False, default=False) — постоянный признак типа потока (True, если схема потока предполагает офферы, например schema == "landings" или в потоке при первичной синхронизации были офферы; False, если это технический поток-фильтр/редирект). Гарантирует, что даже при внешнем удалении всех офферов поток останется редактируемым и позволит сделать Bring back. 
+•	is_dirty (Boolean, nullable=False, default=False) — True, если локальное состояние отличается от последнего снимка из Keitaro (жёлтый фон в UI); False, если синхронизирован (белый фон). 
+•	raw_payload (JSON, nullable=True) — полный JSON-объект потока из Keitaro (используется как основа при PUT /streams/{keitaro_id}, чтобы не затереть фильтры, лендинги и служебные настройки). 
+•	synced_at (DateTime(timezone=True), nullable=True) — время последнего Fetch Streams или Push to Keitaro. 
+•	Связи: campaign: Mapped["Campaign"], offers: Mapped[list["StreamOffer"]] (cascade="all, delete-orphan", order_by="StreamOffer.sort_order, StreamOffer.id").
+4. Таблица stream_offers (Офферы внутри потока + буфер черновика + архив удалённых)
+•	id (Integer, PK, autoincrement=True).
+•	stream_id (Integer, FK("streams.id", ondelete="CASCADE"), nullable=False, index=True).
+•	offer_id (Integer, nullable=False) — ID оффера в Keitaro. 
+•	offer_name (String(255), nullable=False) — кэшированное название оффера. 
+•	sort_order (Integer, nullable=False, default=0) — явный порядок отображения строки в UI.
+•	share (Integer, nullable=False, default=0) — текущий вес оффера в черновике (0..100). Для removed всегда 0. 
+•	is_pinned (Boolean, nullable=False, default=False) — закреплён ли вес оффера от автоматического пересчёта (Pin). 
+•	status (String(20), nullable=False, default="active") — одно из значений: "active", "draft_added", "removed". 
+•	committed_share (Integer, nullable=True) — вес на момент последнего Fetch или Push (NULL для записей, которые ещё ни разу не публиковались). 
+•	committed_status (String(20), nullable=True) — статус на момент последнего Fetch или Push ("active", "removed" или NULL для никогда не публиковавшихся). 
+•	committed_is_pinned (Boolean, nullable=False, default=False) — состояние Pin на момент последнего Fetch или Push. 
+•	Ограничения целостности (__table_args__):
+o	UniqueConstraint("stream_id", "offer_id", name="uq_stream_offer")
+o	CheckConstraint("share >= 0 AND share <= 100", name="ck_stream_offer_share_range")
+o	CheckConstraint("status IN ('active', 'draft_added', 'removed')", name="ck_stream_offer_status") 
+6.3. Матрица переходов состояний в stream_offers
+Событие / Действие	status	share	is_pinned	committed_* поля	stream.is_dirty
+1. Fetch Streams (оффер есть в Keitaro)	"active"	из Keitaro	сохраняется локальное (или False)	committed_status="active", committed_share=share, committed_is_pinned=is_pinned	False
+2. Fetch Streams (оффер пропал из Keitaro)	"removed"	0	False	committed_status="removed", committed_share=0, committed_is_pinned=False	False
+3. Add Offer (новый оффер)	"draft_added"	пересчёт	False	committed_status=None, committed_share=None	True
+4. Add Offer (оффер был removed)	"draft_added" (если committed_status IS NULL), иначе "active"	пересчёт	False	не меняются	True
+5. Remove (мягкое удаление)	"removed"	0	False	не меняются	True
+6. Bring back (восстановление)	"draft_added" (если committed_status IS NULL), иначе "active"	пересчёт	False	не меняются	True
+7. Pin / Unpin	без изменений	заданный (при Pin) или пересчёт	True / False	не меняются	True
+8. Push to Keitaro (успешно)	draft_added → "active"; removed (с committed_status IS NULL) удаляются; остальные removed → "removed"	текущий	текущий	перезаписываются текущими значениями (committed_status=status, committed_share=share, committed_is_pinned=is_pinned)	False
+9. Cancel (отмена черновика)	записи с committed_status IS NULL удаляются; остальные берут committed_status	committed_share	committed_is_pinned	без изменений	False
+					
+7. Детальная бизнес-логика
+7.1. Калькулятор пересчёта весов (app/calculator.py)
+Реализуется как чистая функция без побочных эффектов (не меняет БД напрямую, работает со списком DTO/структур, отсортированных по (sort_order, id)): 
+1.	Всем офферам со статусом "removed" задать share = 0 и is_pinned = False. 
+2.	Выбрать активные офферы: active_list = [o for o in offers if o.status in ("active", "draft_added")]. 
+3.	Если active_list пуст — вернуть пустой расчёт (в сервисе при этом поток помечается is_dirty = True, а Push блокируется до добавления/восстановления хотя бы одного оффера). 
+4.	Разделить active_list на pinned = [o for o in active_list if o.is_pinned] и unpinned = [o for o in active_list if not o.is_pinned]. 
+5.	Посчитать pinned_sum = sum(o.share for o in pinned). 
+6.	Проверка крайних случаев (Pin):
+o	Если len(unpinned) == 0 и pinned_sum == 100: оставить веса запиненных офферов без изменений (защита от деления на ноль).
+o	Если len(unpinned) == 0 и pinned_sum != 100 (например, удалили последний незапиненный оффер при оставшемся Pin = 25%): выбросить ошибку валидации (400 Bad Request: «Невозможно распределить 100%: все оставшиеся офферы закреплены, снимите Pin») и откатить транзакцию.
+o	Если pinned_sum > 100 или (pinned_sum == 100 и len(unpinned) > 0): выбросить ошибку валидации (400 Bad Request: «Сумма закреплённых весов не оставляет процентов для незапиненных офферов») и откатить транзакцию.
+7.	Распределить остаток remaining = 100 - pinned_sum поровну между unpinned методом наибольших остатков:
+o	base_share = remaining // len(unpinned)
+o	remainder = remaining % len(unpinned)
+o	Первым remainder офферам из unpinned назначить base_share + 1, остальным — base_share (например, для 3 офферов: 34, 33, 33). 
+7.2. Часть 1: «Создаватор кампаний»
+Входные данные: name: str (непустое), geo: str (валидный 2-буквенный ISO-код страны, например "AU"), offer_id: int. 
+Последовательность действий:
+1.	Валидировать входные данные и проверить наличие domain_id, group_id (через GET /groups?type=campaigns), traffic_source_id и offer_id в Keitaro до отправки запросов на создание. 
+2.	Сгенерировать случайный alias из 6 буквенно-цифровых символов (например, wVqN1R). 
+3.	Создать кампанию (POST /campaigns) с параметрами из Схемы 2 (type="position", cost_type="CPC", cost_value=0, cost_currency="USD", cost_auto=True). 
+4.	Создать Поток 1 — фильтр по стране -> редирект на [https://google.com](https://google.com) (POST /streams, position=1, filters=[{"name": "country", "mode": "accept", "payload": [geo.upper()]}], is_offer_stream=False). 
+5.	Создать Поток 2 — основной поток с выбранным оффером (POST /streams, position=2, schema="landings", offers=[{"offer_id": offer_id, "share": 100, "state": "active"}], is_offer_stream=True). 
+o	Примечание по частичному сбою: Если кампания создалась, но создание одного из потоков упало с ошибкой — вернуть HTTP 502 с указанием created_campaign_id и этапа сбоя.
+6.	Выполнить fetch_streams(new_campaign_id, discard=True) для сохранения структуры в локальную БД и вернуть созданную кампанию клиенту.
+7.3. Часть 2: «Редактор кампании»
+A. Fetch Streams (POST /api/campaigns/{campaign_keitaro_id}/fetch-streams?discard={bool})
+1.	Защита от потери черновика: Проверить, есть ли у потоков данной кампании в локальной БД флаг is_dirty == True. Если есть и discard == False — вернуть HTTP 409 Conflict со списком несохранённых потоков (требуется явное подтверждение пользователя с discard=true). 
+2.	Запросить актуальные потоки кампании из Keitaro. 
+3.	Обновить offers_cache (если среди пришедших offer_id есть отсутствующие в локальном кэше — запросить GET /offers). 
+4.	В рамках транзакции БД:
+o	Удалить локальные потоки кампании, которые были удалены напрямую в Keitaro. 
+o	Для каждого потока из ответа Keitaro:
+	Сохранить raw_payload, обновить synced_at = now(UTC), установить is_dirty = False. 
+	Определить is_offer_stream: True, если stream.get("schema") == "landings" или len(stream.get("offers", [])) > 0 (или если поток уже был помечен is_offer_stream=True ранее). 
+	Если is_offer_stream == True:
+	Удалить из stream_offers все неподтверждённые записи (committed_status IS NULL). 
+	Для всех офферов из ответа Keitaro: создать/обновить запись (status="active", share, offer_name, committed_* поля). 
+	Детекция внешнего удаления: Для всех оставшихся локальных записей этого потока, которые не пришли в ответе Keitaro (включая случай, когда массив offers пришёл пустым []) — установить status = "removed", share = 0, is_pinned = False, committed_status = "removed", committed_share = 0, committed_is_pinned = False. 
+B. Локальные операции редактирования (выполняются в транзакции БД, ставят is_dirty = True)
+•	Запретить любые мутации для потоков с is_offer_stream == False (400 Bad Request).
+1.	Добавить оффер (POST /api/streams/{stream_id}/offers):
+o	Проверить существование оффера в offers_cache (или подгрузить из Keitaro; если не найден — 404 Not Found). 
+o	Если оффер уже есть в потоке со статусом "active" или "draft_added" -> 400 Bad Request («Оффер уже добавлен в поток»). 
+o	Если оффер есть в потоке со статусом "removed" -> восстановить ("draft_added", если committed_status IS NULL, иначе "active"). 
+o	Иначе -> создать запись со статусом "draft_added", committed_status = None, sort_order = max + 1. 
+o	Пересчитать веса через calculator.py и установить stream.is_dirty = True. 
+2.	Удалить оффер (POST /api/streams/{stream_id}/offers/{offer_id}/remove):
+o	Установить status = "removed", share = 0, is_pinned = False. 
+o	Пересчитать веса (если активных офферов не осталось — оставить список пустым, установить stream.is_dirty = True). 
+3.	Вернуть оффер (POST /api/streams/{stream_id}/offers/{offer_id}/bring-back):
+o	Установить status = "draft_added" (если committed_status IS NULL), иначе "active". 
+o	Пересчитать веса и установить stream.is_dirty = True. 
+4.	Закрепить / открепить вес (POST /api/streams/{stream_id}/offers/{offer_id}/pin):
+o	Запретить для офферов в статусе "removed" (400 Bad Request). 
+o	При is_pinned = True: при необходимости обновить share (0..100) и установить is_pinned = True. 
+o	При is_pinned = False: установить is_pinned = False (переданный share игнорировать). 
+o	Пересчитать веса и установить stream.is_dirty = True. 
+C. Push to Keitaro (POST /api/streams/{stream_id}/push?force={bool})
+1.	Выбрать активные офферы потока (status in ("active", "draft_added")), отсортированные по (sort_order, id). 
+2.	Если активных офферов нет — вернуть 400 Bad Request («Нельзя опубликовать пустой поток без офферов»). 
+3.	Проверить, что sum(o.share for o in active_offers) == 100. 
+4.	Получить актуальный объект потока из Keitaro через GET /streams/{stream.keitaro_id}. 
+5.	Проверка конфликтов с Keitaro (Optimistic Locking):
+o	Если force == False:
+	Сформировать нормализованный набор кортежей из ответа Keitaro: remote_snapshot = {(o["offer_id"], int(o["share"]), o.get("state", "active")) for o in remote_stream.get("offers", [])}.
+	Сформировать локальный baseline из снимка: committed_snapshot = {(o.offer_id, o.committed_share, "active") for o in stream.offers if o.committed_status == "active"}.
+	Если remote_snapshot != committed_snapshot: вернуть HTTP 409 Conflict («Поток был изменён в Keitaro с момента последнего Fetch Streams»).
+6.	Заменить в remote_stream только поле "offers" на [{"offer_id": o.offer_id, "share": o.share, "state": "active"} for o in active_offers] (сохраняя все остальные настройки потока, фильтры и лендинги) и отправить в PUT /streams/{stream.keitaro_id}. 
+7.	После успешного ответа обновить локальную БД:
+o	Удалить записи со статусом "removed", у которых committed_status IS NULL (никогда не публиковались). 
+o	Все "draft_added" перевести в "active". 
+o	Для всех оставшихся записей обновить committed_share = share, committed_status = status, committed_is_pinned = is_pinned. 
+o	Обновить stream.raw_payload, stream.synced_at = now(UTC), stream.is_dirty = False. 
+D. Cancel (POST /api/streams/{stream_id}/cancel)
+1.	Удалить из stream_offers все записи, у которых committed_status IS NULL. 
+2.	Для оставшихся записей восстановить: share = committed_share, status = committed_status, is_pinned = committed_is_pinned. 
+3.	Не вызывать калькулятор пересчёта весов при откате. 
+4.	Установить stream.is_dirty = False. 
+8. Эндпоинты REST API
+•	GET /api/offers/search?q={query} — поиск по локальному кэшу офферов (по подстроке name без учёта регистра или точному совпадению id; если кэш пуст — загрузить из Keitaro). 
+•	POST /api/offers/sync — принудительное обновление кэша офферов из Keitaro.
+•	GET /api/campaigns — получить список кампаний из Keitaro.
+•	POST /api/campaigns — создать новую кампанию с 2 потоками ({"name": "...", "geo": "AU", "offer_id": 123}). 
+•	POST /api/campaigns/{campaign_keitaro_id}/fetch-streams?discard=false — выполнить Fetch Streams (409 Conflict при наличии is_dirty и discard=false). 
+•	GET /api/campaigns/{campaign_keitaro_id}/streams — получить текущее состояние потоков из локальной БД (id, keitaro_id, name, position, is_offer_stream, has_offers, is_dirty, share_total, synced_at, offers). 
+•	POST /api/streams/{stream_id}/offers — добавить оффер в поток ({"offer_id": 123}). 
+•	POST /api/streams/{stream_id}/offers/{offer_id}/remove — перевести оффер в статус removed. 
+•	POST /api/streams/{stream_id}/offers/{offer_id}/bring-back — восстановить оффер из статуса removed. 
+•	POST /api/streams/{stream_id}/offers/{offer_id}/pin — закрепить/открепить вес ({"is_pinned": true, "share": 25}). 
+•	POST /api/streams/{stream_id}/push?force=false — опубликовать изменения потока в Keitaro (409 Conflict при изменении потока в Keitaro и force=false). 
+•	POST /api/streams/{stream_id}/cancel — отменить черновик потока. 
+9. Минимальные требования к UI (static/index.html)
+1.	Блок «Create Campaign»:
+o	Поля: Name, Geo (код страны, например AU), Offer (поле поиска с debounce и выпадающим автокомплитом по ID/названию), кнопка Create (блокируется на время запроса во избежание двойного клика). 
+2.	Блок «Campaign Editor»:
+o	Выбор кампании (из списка или ввод ID) + кнопка Fetch Streams (при 409 Conflict — диалог подтверждения перезаписи черновика). 
+o	Список потоков кампании:
+	Потоки без офферов (is_offer_stream == False) — компактная информационная карточка без деталей и кнопок редактирования. 
+	Офферные потоки (is_offer_stream == True) — карточка с белым фоном (is_dirty == False) или жёлтым фоном (is_dirty == True), отображением суммы весов (share_total %), кнопками Push to Keitaro (блокируется, если активных офферов 0) и Cancel, полем добавления оффера с автокомплитом. 
+	При получении 409 Conflict на Push — баннер/диалог выбора: «Синхронизировать (Fetch Streams)» или «Перезаписать в Keitaro (Force Push)». 
+	Таблица офферов внутри потока: ID, название (экранированное от XSS), вес (share %), переключатель Pin, кнопка Remove (для активных) или серая строка + вес 0% + кнопка Bring back (для removed). 
+10. Чек-лист приёмки и тесты (pytest)
+1.	Юнит-тесты калькулятора (tests/test_calculator.py):
+o	Равномерное распределение для 1 (100), 2 (50/50), 3 (34/33/33), 4 (25/25/25/25) офферов. 
+o	Закрепление Pin 25% + два свободных оффера → 25/38/37; удаление/добавление других офферов не меняет 25%. 
+o	Все офферы закреплены с суммой 100% → корректный возврат без деления на ноль; сумма > 100% или удаление последнего свободного при Pin 25% → ошибка 400 с откатом транзакции. 
+2.	Интеграционные и mock-тесты (tests/test_flows.py):
+o	Создание кампании формирует 2 потока (фильтр по стране -> Google; оффер 100%) с доменом, группой и источником из .env. 
+o	Жизненный цикл черновика: Add (жёлтый поток) → Remove → Bring back → Cancel (новая привязка исчезает, прежние веса восстановлены, поток белый). 
+o	Внешнее удаление всех офферов в Keitaro + Fetch Streams → поток остаётся редактируемым (is_offer_stream=True), все опубликованные офферы переходят в серый статус removed и доступны для Bring back. 
+o	Защита от конфликтов: Fetch при is_dirty=True возвращает 409; Push при изменении весов/состава в Keitaro возвращает 409 и не затирает данные без force=true. 
+
