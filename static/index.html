@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keitaro Wrapper &amp; Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <header class="mb-6 flex flex-wrap gap-4 justify-between items-center bg-white p-6 rounded-lg shadow">
+            <div>
+                <h1 class="text-2xl font-bold text-blue-600">Keitaro Wrapper &amp; Editor</h1>
+                <p class="text-xs text-gray-500 mt-1">Автоматизация создания кампаний и безопасное управление офферами потоков</p>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="syncOffersCache()" id="sync-offers-btn" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-3 py-2 rounded text-sm font-medium">
+                    Синхронизировать офферы
+                </button>
+                <button onclick="loadCampaigns()" class="bg-gray-200 hover:bg-gray-300 px-4 py-2 rounded text-sm font-medium">
+                    Обновить список
+                </button>
+            </div>
+        </header>
+
+        <!-- Notification Banner -->
+        <div id="status-banner" class="hidden mb-6 p-4 rounded-lg border text-sm flex justify-between items-center shadow-sm">
+            <span id="status-banner-text"></span>
+            <button onclick="hideBanner()" class="ml-4 text-xs font-semibold underline">Закрыть</button>
+        </div>
+
+        <!-- Create Campaign Section -->
+        <section class="bg-white p-6 rounded-lg shadow mb-8">
+            <h2 class="text-lg font-semibold mb-4">Создаватор кампаний</h2>
+            <form id="create-form" onsubmit="handleCreateCampaign(event)" class="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                <div class="md:col-span-4">
+                    <label for="camp-name" class="block text-sm font-medium text-gray-700 mb-1">Имя кампании</label>
+                    <input type="text" id="camp-name" required class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring focus:ring-blue-300" placeholder="My Campaign">
+                </div>
+                <div class="md:col-span-2">
+                    <label for="camp-geo" class="block text-sm font-medium text-gray-700 mb-1">GEO (ISO 2)</label>
+                    <input type="text" id="camp-geo" required maxlength="2" value="AU" class="w-full border rounded px-3 py-2 text-sm uppercase focus:outline-none focus:ring focus:ring-blue-300" placeholder="AU">
+                </div>
+                <div class="md:col-span-4 relative">
+                    <label for="camp-offer-search" class="block text-sm font-medium text-gray-700 mb-1">Оффер (поиск по ID или названию)</label>
+                    <input type="text" id="camp-offer-search" autocomplete="off" class="w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring focus:ring-blue-300" placeholder="Начните вводить ID или название...">
+                    <input type="hidden" id="camp-offer-id">
+                    <div id="camp-offer-dropdown" class="hidden absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-60 overflow-y-auto text-sm"></div>
+                </div>
+                <div class="md:col-span-2">
+                    <button type="submit" id="create-btn" class="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-2 px-4 rounded text-sm">
+                        Create
+                    </button>
+                </div>
+            </form>
+            <p id="camp-selected-offer-label" class="text-xs text-gray-500 mt-2">Оффер не выбран</p>
+        </section>
+
+        <!-- Campaign Editor Section -->
+        <section class="bg-white p-6 rounded-lg shadow mb-8">
+            <h2 class="text-lg font-semibold mb-4">Редактор кампаний</h2>
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3 mb-6 items-center">
+                <div class="md:col-span-6">
+                    <select id="campaign-select" onchange="onCampaignSelect()" class="w-full border rounded px-3 py-2 text-sm">
+                        <option value="">-- Выберите кампанию из Keitaro --</option>
+                    </select>
+                </div>
+                <div class="md:col-span-2">
+                    <input type="number" id="campaign-id-input" min="1" placeholder="Или ID кампании" class="w-full border rounded px-3 py-2 text-sm" onkeydown="if(event.key==='Enter'){event.preventDefault();selectCampaignById();}">
+                </div>
+                <div class="md:col-span-4 flex gap-2">
+                    <button onclick="selectCampaignById()" class="bg-gray-200 hover:bg-gray-300 px-3 py-2 rounded text-sm font-medium">Открыть ID</button>
+                    <button onclick="fetchStreams(false)" id="fetch-btn" class="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white px-4 py-2 rounded text-sm font-medium">
+                        Fetch Streams
+                    </button>
+                </div>
+            </div>
+
+            <!-- 409 Conflict Banner for Fetch Streams -->
+            <div id="fetch-conflict-banner" class="hidden mb-6 p-4 rounded-lg border border-amber-400 bg-amber-50 text-amber-900 text-sm flex flex-wrap justify-between items-center gap-3">
+                <div>
+                    <strong>Обнаружены несохранённые черновики.</strong> Повторный Fetch Streams перезапишет локальные изменения данными из Keitaro.
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="hideFetchConflict()" class="bg-white border border-amber-300 hover:bg-amber-100 px-3 py-1.5 rounded text-xs font-medium">Отмена</button>
+                    <button onclick="fetchStreams(true)" class="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded text-xs font-medium">Перезаписать черновик</button>
+                </div>
+            </div>
+
+            <div id="streams-container" class="space-y-6">
+                <p class="text-gray-500 text-sm">Выберите кампанию или введите её ID и нажмите Fetch Streams.</p>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        let currentCampaigns = [];
+        let currentStreams = [];
+        let selectedCampaignId = null;
+        let pushConflicts = {};
+        const searchTimers = {};
+
+        function showBanner(message, type = 'info') {
+            const banner = document.getElementById('status-banner');
+            const textEl = document.getElementById('status-banner-text');
+            banner.classList.remove('hidden', 'bg-red-50', 'border-red-300', 'text-red-800', 'bg-green-50', 'border-green-300', 'text-green-800', 'bg-blue-50', 'border-blue-300', 'text-blue-800');
+            if (type === 'error') {
+                banner.classList.add('bg-red-50', 'border-red-300', 'text-red-800');
+            } else if (type === 'success') {
+                banner.classList.add('bg-green-50', 'border-green-300', 'text-green-800');
+            } else {
+                banner.classList.add('bg-blue-50', 'border-blue-300', 'text-blue-800');
+            }
+            textEl.textContent = message;
+        }
+
+        function hideBanner() {
+            document.getElementById('status-banner').classList.add('hidden');
+        }
+
+        function formatErrorDetail(errJson, fallback) {
+            if (!errJson) return fallback;
+            if (typeof errJson.detail === 'string') return errJson.detail;
+            if (errJson.detail && typeof errJson.detail === 'object') {
+                return errJson.detail.message || JSON.stringify(errJson.detail);
+            }
+            return fallback;
+        }
+
+        function escapeHtml(str) {
+            return String(str ?? '')
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        async function init() {
+            setupCreateOfferAutocomplete();
+            await loadCampaigns();
+        }
+
+        async function syncOffersCache() {
+            const btn = document.getElementById('sync-offers-btn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/offers/sync', { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Не удалось синхронизировать офферы'));
+                }
+                const data = await res.json();
+                showBanner(`Кэш офферов обновлён (${data.count} шт.).`, 'success');
+            } catch (err) {
+                showBanner('Ошибка синхронизации офферов: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        async function searchOffersApi(query) {
+            const url = `/api/offers/search?q=${encodeURIComponent(query || '')}`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                throw new Error(formatErrorDetail(err, 'Ошибка поиска офферов'));
+            }
+            return await res.json();
+        }
+
+        function setupOfferAutocomplete(inputEl, dropdownEl, onSelect) {
+            const timerKey = inputEl.id;
+
+            const renderList = (items) => {
+                if (!items.length) {
+                    dropdownEl.innerHTML = '<div class="px-3 py-2 text-gray-400 text-xs">Офферы не найдены</div>';
+                    dropdownEl.classList.remove('hidden');
+                    return;
+                }
+                dropdownEl.innerHTML = items.map(o => `
+                    <button type="button" data-id="${o.id}" data-name="${escapeHtml(o.name)}"
+                        class="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-100 last:border-0 flex justify-between items-center">
+                        <span><strong class="text-blue-700">[${o.id}]</strong> ${escapeHtml(o.name)}</span>
+                        <span class="text-xs text-gray-400">${escapeHtml(o.state)}</span>
+                    </button>
+                `).join('');
+                dropdownEl.querySelectorAll('button[data-id]').forEach(btn => {
+                    btn.addEventListener('mousedown', (e) => {
+                        e.preventDefault();
+                        const id = parseInt(btn.getAttribute('data-id'), 10);
+                        const name = btn.getAttribute('data-name');
+                        dropdownEl.classList.add('hidden');
+                        onSelect({ id, name });
+                    });
+                });
+                dropdownEl.classList.remove('hidden');
+            };
+
+            const triggerSearch = () => {
+                clearTimeout(searchTimers[timerKey]);
+                searchTimers[timerKey] = setTimeout(async () => {
+                    try {
+                        const items = await searchOffersApi(inputEl.value.trim());
+                        renderList(items);
+                    } catch (err) {
+                        dropdownEl.innerHTML = `<div class="px-3 py-2 text-red-600 text-xs">${escapeHtml(err.message)}</div>`;
+                        dropdownEl.classList.remove('hidden');
+                    }
+                }, 250);
+            };
+
+            inputEl.addEventListener('input', triggerSearch);
+            inputEl.addEventListener('focus', triggerSearch);
+            inputEl.addEventListener('blur', () => {
+                setTimeout(() => dropdownEl.classList.add('hidden'), 150);
+            });
+        }
+
+        function setupCreateOfferAutocomplete() {
+            const input = document.getElementById('camp-offer-search');
+            const hiddenId = document.getElementById('camp-offer-id');
+            const dropdown = document.getElementById('camp-offer-dropdown');
+            const label = document.getElementById('camp-selected-offer-label');
+
+            input.addEventListener('input', () => {
+                const raw = input.value.trim();
+                if (/^\d+$/.test(raw)) {
+                    hiddenId.value = raw;
+                    label.textContent = `Будет использован Offer ID: ${raw}`;
+                } else {
+                    hiddenId.value = '';
+                    label.textContent = 'Выберите оффер из выпадающего списка';
+                }
+            });
+
+            setupOfferAutocomplete(input, dropdown, (offer) => {
+                hiddenId.value = offer.id;
+                input.value = `[${offer.id}] ${offer.name}`;
+                label.textContent = `Выбран оффер: [${offer.id}] ${offer.name}`;
+            });
+        }
+
+        async function loadCampaigns() {
+            try {
+                const res = await fetch('/api/campaigns');
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to load campaigns'));
+                }
+                currentCampaigns = await res.json();
+                const select = document.getElementById('campaign-select');
+                const previous = selectedCampaignId;
+                select.innerHTML = '<option value="">-- Выберите кампанию из Keitaro --</option>';
+                currentCampaigns.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = `${c.name} (ID: ${c.id}${c.alias ? ', Alias: ' + c.alias : ''})`;
+                    select.appendChild(opt);
+                });
+                if (previous) {
+                    select.value = previous;
+                }
+            } catch (err) {
+                showBanner('Ошибка загрузки кампаний: ' + err.message, 'error');
+            }
+        }
+
+        async function handleCreateCampaign(event) {
+            event.preventDefault();
+            const btn = document.getElementById('create-btn');
+            const rawSearch = document.getElementById('camp-offer-search').value.trim();
+            let offerId = parseInt(document.getElementById('camp-offer-id').value, 10);
+            if (!offerId && /^\d+$/.test(rawSearch)) {
+                offerId = parseInt(rawSearch, 10);
+            }
+            if (!offerId) {
+                showBanner('Выберите оффер из автокомплита или укажите его числовой ID.', 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = 'Создание...';
+
+            const payload = {
+                name: document.getElementById('camp-name').value.trim(),
+                geo: document.getElementById('camp-geo').value.trim().toUpperCase(),
+                offer_id: offerId
+            };
+
+            try {
+                const res = await fetch('/api/campaigns', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Creation failed'));
+                }
+                const camp = await res.json();
+                showBanner(`Кампания «${camp.name}» (ID: ${camp.keitaro_id}) создана!`, 'success');
+                await loadCampaigns();
+                selectedCampaignId = String(camp.keitaro_id);
+                document.getElementById('campaign-select').value = selectedCampaignId;
+                document.getElementById('campaign-id-input').value = selectedCampaignId;
+                currentStreams = camp.streams || [];
+                pushConflicts = {};
+                renderStreams();
+            } catch (err) {
+                showBanner('Ошибка создания кампании: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create';
+            }
+        }
+
+        async function onCampaignSelect() {
+            const select = document.getElementById('campaign-select');
+            selectedCampaignId = select.value;
+            document.getElementById('campaign-id-input').value = selectedCampaignId || '';
+            hideFetchConflict();
+            pushConflicts = {};
+            if (!selectedCampaignId) {
+                currentStreams = [];
+                document.getElementById('streams-container').innerHTML = '<p class="text-gray-500 text-sm">Выберите кампанию или введите её ID и нажмите Fetch Streams.</p>';
+                return;
+            }
+            await loadStreams(selectedCampaignId);
+        }
+
+        async function selectCampaignById() {
+            const idVal = document.getElementById('campaign-id-input').value.trim();
+            if (!idVal) return;
+            selectedCampaignId = idVal;
+            document.getElementById('campaign-select').value = idVal;
+            hideFetchConflict();
+            pushConflicts = {};
+            await loadStreams(selectedCampaignId);
+        }
+
+        async function loadStreams(campId) {
+            try {
+                const res = await fetch(`/api/campaigns/${campId}/streams`);
+                if (!res.ok) throw new Error('Failed to load streams');
+                currentStreams = await res.json();
+                renderStreams();
+            } catch (err) {
+                showBanner('Ошибка загрузки потоков: ' + err.message, 'error');
+            }
+        }
+
+        function hideFetchConflict() {
+            document.getElementById('fetch-conflict-banner').classList.add('hidden');
+        }
+
+        async function fetchStreams(discard) {
+            if (!selectedCampaignId) {
+                showBanner('Сначала выберите кампанию или введите её ID.', 'error');
+                return;
+            }
+            const btn = document.getElementById('fetch-btn');
+            btn.disabled = true;
+            hideFetchConflict();
+
+            try {
+                const res = await fetch(`/api/campaigns/${selectedCampaignId}/fetch-streams?discard=${discard}`, {
+                    method: 'POST'
+                });
+                if (res.status === 409) {
+                    document.getElementById('fetch-conflict-banner').classList.remove('hidden');
+                    return;
+                }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Fetch failed'));
+                }
+                const camp = await res.json();
+                currentStreams = camp.streams || [];
+                pushConflicts = {};
+                renderStreams();
+                showBanner('Потоки успешно синхронизированы из Keitaro.', 'success');
+            } catch (err) {
+                showBanner('Ошибка Fetch Streams: ' + err.message, 'error');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function updateStreamInState(updatedStream) {
+            const idx = currentStreams.findIndex(s => s.id === updatedStream.id);
+            if (idx >= 0) {
+                currentStreams[idx] = updatedStream;
+            } else {
+                currentStreams.push(updatedStream);
+            }
+            renderStreams();
+        }
+
+        function getStatusBadge(status) {
+            switch (status) {
+                case 'active': return 'bg-green-100 text-green-800';
+                case 'draft_added': return 'bg-blue-100 text-blue-800';
+                case 'removed': return 'bg-gray-200 text-gray-700';
+                default: return 'bg-gray-100 text-gray-800';
+            }
+        }
+
+        function renderStreams() {
+            const container = document.getElementById('streams-container');
+            if (!currentStreams || currentStreams.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-sm">Локальных потоков пока нет. Нажмите <strong>Fetch Streams</strong>, чтобы загрузить потоки из Keitaro.</p>';
+                return;
+            }
+
+            container.innerHTML = currentStreams.map(s => {
+                if (!s.is_offer_stream) {
+                    return `
+                        <div class="border border-gray-200 rounded-lg p-3 bg-gray-50 shadow-sm flex justify-between items-center">
+                            <div>
+                                <span class="font-medium text-gray-700 text-sm">Поток #${s.position}: ${escapeHtml(s.name || 'Технический поток')}</span>
+                                <span class="text-xs text-gray-400 ml-2">(Keitaro ID: ${s.keitaro_id})</span>
+                            </div>
+                            <span class="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded">Поток без офферов</span>
+                        </div>
+                    `;
+                }
+
+                const bgClass = s.is_dirty ? 'bg-yellow-50 border-yellow-400' : 'bg-white border-gray-200';
+                const canPush = s.has_offers && s.share_total === 100;
+                const conflictMsg = pushConflicts[s.id];
+
+                return `
+                    <div class="border rounded-lg p-4 ${bgClass} shadow-sm transition-colors">
+                        <div class="flex flex-wrap justify-between items-center gap-3 mb-3">
+                            <div>
+                                <div class="flex items-center gap-2">
+                                    <h3 class="font-semibold text-gray-800">Поток #${s.position}: ${escapeHtml(s.name || 'Офферный поток')}</h3>
+                                    <span class="text-xs text-gray-500">(Keitaro ID: ${s.keitaro_id})</span>
+                                    ${s.is_dirty
+                                        ? '<span class="text-xs bg-yellow-200 text-yellow-900 px-2 py-0.5 rounded font-medium">Черновик (не опубликован)</span>'
+                                        : '<span class="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded">Синхронизирован</span>'}
+                                </div>
+                                <span class="text-xs text-gray-500">
+                                    Сумма весов: <strong class="${s.share_total === 100 ? 'text-green-600' : 'text-red-600'}">${s.share_total}%</strong>
+                                    | Синхронизировано: ${s.synced_at ? new Date(s.synced_at).toLocaleString() : 'Никогда'}
+                                </span>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="cancelDraft(${s.id})" class="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1.5 rounded text-xs font-medium">Cancel</button>
+                                <button onclick="pushStream(${s.id}, false)" ${canPush ? '' : 'disabled'}
+                                    title="${canPush ? 'Опубликовать изменения в Keitaro' : 'Нужен хотя бы 1 активный оффер и сумма весов 100%'}"
+                                    class="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded text-xs font-medium">
+                                    Push to Keitaro
+                                </button>
+                            </div>
+                        </div>
+
+                        ${conflictMsg ? `
+                            <div class="mb-4 p-3 rounded border border-red-300 bg-red-50 text-red-900 text-xs flex flex-wrap justify-between items-center gap-2">
+                                <span><strong>Конфликт версий (409):</strong> ${escapeHtml(conflictMsg)}</span>
+                                <div class="flex gap-2">
+                                    <button onclick="fetchStreams(true)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded font-medium">Синхронизировать (Fetch Streams)</button>
+                                    <button onclick="pushStream(${s.id}, true)" class="bg-red-600 hover:bg-red-700 text-white px-2.5 py-1 rounded font-medium">Перезаписать в Keitaro (Force Push)</button>
+                                    <button onclick="clearPushConflict(${s.id})" class="bg-white border border-red-300 px-2 py-1 rounded">Отмена</button>
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        <div class="overflow-x-auto mb-4">
+                            <table class="w-full text-left text-sm">
+                                <thead class="bg-gray-100 text-gray-600 uppercase text-xs">
+                                    <tr>
+                                        <th class="p-2">ID</th>
+                                        <th class="p-2">Название</th>
+                                        <th class="p-2">Статус</th>
+                                        <th class="p-2">Вес (%)</th>
+                                        <th class="p-2">Pin</th>
+                                        <th class="p-2 text-right">Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-200">
+                                    ${s.offers.map(o => {
+                                        const isRemoved = o.status === 'removed';
+                                        const rowStyle = isRemoved ? 'bg-gray-100 text-gray-400' : '';
+                                        const nameStyle = isRemoved ? 'line-through' : '';
+                                        return `
+                                            <tr class="${rowStyle}">
+                                                <td class="p-2">${o.offer_id}</td>
+                                                <td class="p-2 font-medium ${nameStyle}">${escapeHtml(o.offer_name)}</td>
+                                                <td class="p-2"><span class="px-2 py-0.5 rounded text-xs ${getStatusBadge(o.status)}">${escapeHtml(o.status)}</span></td>
+                                                <td class="p-2 font-bold">
+                                                    ${isRemoved
+                                                        ? '<span>0%</span>'
+                                                        : `<div class="flex items-center gap-1">
+                                                                <input type="number" min="0" max="100" id="pin-share-${s.id}-${o.offer_id}" value="${o.share}"
+                                                                    class="w-16 border rounded px-2 py-0.5 text-xs font-semibold text-gray-800"
+                                                                    onkeydown="if(event.key==='Enter'){event.preventDefault();applyPinShare(${s.id}, ${o.offer_id});}">
+                                                                <span class="text-xs text-gray-500">%</span>
+                                                           </div>`
+                                                    }
+                                                </td>
+                                                <td class="p-2">
+                                                    <label class="inline-flex items-center gap-1 cursor-pointer">
+                                                        <input type="checkbox" ${o.is_pinned ? 'checked' : ''} ${isRemoved ? 'disabled' : ''}
+                                                            onchange="togglePin(${s.id}, ${o.offer_id}, this.checked)">
+                                                        <span class="text-xs">${o.is_pinned ? 'Pinned' : 'Pin'}</span>
+                                                    </label>
+                                                </td>
+                                                <td class="p-2 text-right">
+                                                    ${isRemoved
+                                                        ? `<button onclick="bringBack(${s.id}, ${o.offer_id})" class="bg-emerald-500 hover:bg-emerald-600 text-white px-2 py-1 rounded text-xs">Bring back</button>`
+                                                        : `<button onclick="removeOffer(${s.id}, ${o.offer_id})" class="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-xs">Remove</button>`
+                                                    }
+                                                </td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="flex gap-2 items-center relative max-w-md">
+                            <div class="flex-1 relative">
+                                <input type="text" id="add-offer-search-${s.id}" autocomplete="off" placeholder="Поиск оффера по ID или названию..."
+                                    class="w-full border rounded px-3 py-1.5 text-xs focus:outline-none focus:ring focus:ring-emerald-300">
+                                <input type="hidden" id="add-offer-id-${s.id}">
+                                <div id="add-offer-dropdown-${s.id}" class="hidden absolute z-20 left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-52 overflow-y-auto text-xs"></div>
+                            </div>
+                            <button onclick="addOffer(${s.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded text-xs font-medium">+ Добавить оффер</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // Wire autocomplete for each offer stream
+            currentStreams.forEach(s => {
+                if (!s.is_offer_stream) return;
+                const searchInput = document.getElementById(`add-offer-search-${s.id}`);
+                const hiddenInput = document.getElementById(`add-offer-id-${s.id}`);
+                const dropdown = document.getElementById(`add-offer-dropdown-${s.id}`);
+                if (!searchInput || !hiddenInput || !dropdown) return;
+
+                searchInput.addEventListener('input', () => {
+                    const raw = searchInput.value.trim();
+                    hiddenInput.value = /^\d+$/.test(raw) ? raw : '';
+                });
+
+                setupOfferAutocomplete(searchInput, dropdown, (offer) => {
+                    hiddenInput.value = offer.id;
+                    searchInput.value = `[${offer.id}] ${offer.name}`;
+                });
+            });
+        }
+
+        function clearPushConflict(streamId) {
+            delete pushConflicts[streamId];
+            renderStreams();
+        }
+
+        async function addOffer(streamId) {
+            const hidden = document.getElementById(`add-offer-id-${streamId}`);
+            const search = document.getElementById(`add-offer-search-${streamId}`);
+            const rawSearch = (search?.value || '').trim();
+            let offerId = parseInt(hidden?.value || '', 10);
+            if (!offerId && /^\d+$/.test(rawSearch)) {
+                offerId = parseInt(rawSearch, 10);
+            }
+            if (!offerId) {
+                showBanner('Выберите оффер из автокомплита или введите его ID.', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/streams/${streamId}/offers`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ offer_id: offerId })
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to add offer'));
+                }
+                const updated = await res.json();
+                updateStreamInState(updated);
+                hideBanner();
+            } catch (err) {
+                showBanner('Ошибка добавления оффера: ' + err.message, 'error');
+            }
+        }
+
+        async function removeOffer(streamId, offerId) {
+            try {
+                const res = await fetch(`/api/streams/${streamId}/offers/${offerId}/remove`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to remove offer'));
+                }
+                const updated = await res.json();
+                updateStreamInState(updated);
+                hideBanner();
+            } catch (err) {
+                showBanner('Ошибка удаления оффера: ' + err.message, 'error');
+            }
+        }
+
+        async function bringBack(streamId, offerId) {
+            try {
+                const res = await fetch(`/api/streams/${streamId}/offers/${offerId}/bring-back`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to bring back offer'));
+                }
+                const updated = await res.json();
+                updateStreamInState(updated);
+                hideBanner();
+            } catch (err) {
+                showBanner('Ошибка восстановления оффера: ' + err.message, 'error');
+            }
+        }
+
+        async function applyPinShare(streamId, offerId) {
+            await togglePin(streamId, offerId, true);
+        }
+
+        async function togglePin(streamId, offerId, isPinned) {
+            const shareInput = document.getElementById(`pin-share-${streamId}-${offerId}`);
+            const body = { is_pinned: isPinned };
+            if (isPinned && shareInput) {
+                const parsed = parseInt(shareInput.value, 10);
+                if (!Number.isNaN(parsed)) {
+                    body.share = parsed;
+                }
+            }
+
+            try {
+                const res = await fetch(`/api/streams/${streamId}/offers/${offerId}/pin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to update pin'));
+                }
+                const updated = await res.json();
+                updateStreamInState(updated);
+                hideBanner();
+            } catch (err) {
+                showBanner('Ошибка Pin: ' + err.message, 'error');
+                renderStreams();
+            }
+        }
+
+        async function cancelDraft(streamId) {
+            try {
+                const res = await fetch(`/api/streams/${streamId}/cancel`, { method: 'POST' });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to cancel draft'));
+                }
+                const updated = await res.json();
+                delete pushConflicts[streamId];
+                updateStreamInState(updated);
+                showBanner('Черновик потока отменён.', 'info');
+            } catch (err) {
+                showBanner('Ошибка Cancel: ' + err.message, 'error');
+            }
+        }
+
+        async function pushStream(streamId, force = false) {
+            try {
+                const res = await fetch(`/api/streams/${streamId}/push?force=${force}`, { method: 'POST' });
+                if (res.status === 409) {
+                    const err = await res.json().catch(() => null);
+                    pushConflicts[streamId] = formatErrorDetail(err, 'Поток был изменён в Keitaro с момента последнего Fetch Streams.');
+                    renderStreams();
+                    return;
+                }
+                if (!res.ok) {
+                    const err = await res.json().catch(() => null);
+                    throw new Error(formatErrorDetail(err, 'Failed to push stream'));
+                }
+                const updated = await res.json();
+                delete pushConflicts[streamId];
+                updateStreamInState(updated);
+                showBanner('Поток успешно опубликован в Keitaro!', 'success');
+            } catch (err) {
+                showBanner('Ошибка публикации: ' + err.message, 'error');
+            }
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>

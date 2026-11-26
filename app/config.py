@@ -1,5 +1,5 @@
-import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     KEITARO_BASE_URL: str = "https://your-tracker-domain.com"
@@ -9,8 +9,7 @@ class Settings(BaseSettings):
     DEFAULT_SOURCE_NAME: str = "FORTESTS"
     DATABASE_URL: str = "sqlite+aiosqlite:///./keitaro_wrapper.db"
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
 
 settings = Settings()

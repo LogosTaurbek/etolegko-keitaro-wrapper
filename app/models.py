@@ -48,7 +48,7 @@ class Stream(Base):
         "StreamOffer",
         back_populates="stream",
         cascade="all, delete-orphan",
-        order_by=["StreamOffer.sort_order", "StreamOffer.id"]
+        order_by=lambda: [StreamOffer.sort_order, StreamOffer.id]
     )
 
 class StreamOffer(Base):
