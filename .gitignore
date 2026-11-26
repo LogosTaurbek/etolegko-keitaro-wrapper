@@ -2,5 +2,3 @@
 *.db
 __pycache__/
 .pytest_cache/
-alembic/versions/*.py
-!alembic/versions/README
